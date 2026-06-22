@@ -1,24 +1,14 @@
 {
-  "name": "zentochat",
-  "version": "1.0.0",
-  "description": "ZentoChat - Professional Telegram Anonymous Chat Bot",
-  "main": "src/bot.js",
-  "scripts": {
-    "start": "node src/bot.js",
-    "dev": "node --watch src/bot.js"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "anonymous-chat",
-    "telegraf",
-    "render"
-  ],
-  "author": "ZentoChat",
-  "license": "MIT",
-  "dependencies": {
-    "dotenv": "^16.6.1",
-    "express": "^4.22.2",
-    "telegraf": "^4.16.3"
-  }
+"name": "zentochat-pro-max",
+"version": "2.0.0",
+"description": "ZentoChat PRO MAX - Anonymous Telegram Chat Bot",
+"main": "src/bot.js",
+"scripts": {
+"start": "node src/bot.js"
+},
+"dependencies": {
+"dotenv": "^16.4.5",
+"express": "^4.19.2",
+"telegraf": "^4.16.3"
+}
 }

@@ -1,64 +1,135 @@
-const waitingUsers = [];
-const activeChats = {};
+const {
+getUser,
+isVip,
+isBoosted,
+incrementStat,
+isBlocked
+} = require("../database/db");
 
-function addToQueue(userId) {
+const waitingQueue = [];
+const activeChats = new Map(); // userId -> partnerId
 
-  if (
-    waitingUsers.includes(userId)
-  ) {
-    return null;
-  }
+function isInQueue(userId) {
+return waitingQueue.includes(Number(userId));
+}
 
-  if (waitingUsers.length > 0) {
+function removeFromQueue(userId) {
+const idx = waitingQueue.indexOf(Number(userId));
+if (idx !== -1) waitingQueue.splice(idx, 1);
+}
 
-    const partner = waitingUsers.shift();
-
-    activeChats[userId] = partner;
-    activeChats[partner] = userId;
-
-    return partner;
-  }
-
-  waitingUsers.push(userId);
-
-  return null;
+function isInChat(userId) {
+return activeChats.has(Number(userId));
 }
 
 function getPartner(userId) {
-  return activeChats[userId];
+return activeChats.get(Number(userId)) || null;
 }
 
-function disconnect(userId) {
+function startChat(a, b) {
+activeChats.set(Number(a), Number(b));
+activeChats.set(Number(b), Number(a));
 
-  const partner =
-    activeChats[userId];
-
-  if (!partner) return null;
-
-  delete activeChats[userId];
-  delete activeChats[partner];
-
-  return partner;
+incrementStat(a, "chats");
+incrementStat(b, "chats");
 }
 
-function isChatting(userId) {
-  return !!activeChats[userId];
+function endChat(userId) {
+const uid = Number(userId);
+const partner = activeChats.get(uid);
+
+if (!partner) return null;
+
+activeChats.delete(uid);
+activeChats.delete(partner);
+
+return Number(partner);
 }
 
-function removeWaiting(userId) {
+function queueUser(userId) {
+const uid = Number(userId);
+if (!waitingQueue.includes(uid)) waitingQueue.push(uid);
+}
 
-  const index =
-    waitingUsers.indexOf(userId);
+function preferenceMatch(user, candidate) {
+if (!user || !candidate) return false;
 
-  if (index !== -1) {
-    waitingUsers.splice(index, 1);
-  }
+const pref = user.preference || "all";
+const cPref = candidate.preference || "all";
+
+const userAccepts =
+pref === "all" || (candidate.gender && candidate.gender === pref);
+
+const candidateAccepts =
+cPref === "all" || (user.gender && user.gender === cPref);
+
+return userAccepts && candidateAccepts;
+}
+
+function findBestPartner(userId) {
+const uid = Number(userId);
+const user = getUser(uid);
+if (!user) return null;
+
+const candidates = waitingQueue.filter(id => id !== uid);
+
+if (!candidates.length) return null;
+
+// فیلتر بلاک
+const filtered = candidates.filter(candidateId => {
+if (isBlocked(uid, candidateId)) return false;
+if (isBlocked(candidateId, uid)) return false;
+return true;
+});
+
+if (!filtered.length) return null;
+
+// فقط کسانی که preference جور است
+const matched = filtered.filter(candidateId => {
+const c = getUser(candidateId);
+return preferenceMatch(user, c);
+});
+
+const pool = matched.length ? matched : filtered;
+
+// اولویت: VIP + Boost > VIP > Boost > normal
+const vipBoost = pool.find(id => isVip(id) && isBoosted(id));
+if (vipBoost) return vipBoost;
+
+const vip = pool.find(id => isVip(id));
+if (vip) return vip;
+
+const boost = pool.find(id => isBoosted(id));
+if (boost) return boost;
+
+return pool[0] || null;
+}
+
+function nextChat(userId) {
+incrementStat(userId, "nexts");
+const partner = endChat(userId);
+queueUser(userId);
+return partner;
+}
+
+function getQueueCount() {
+return waitingQueue.length;
+}
+
+function getActiveCount() {
+return Math.floor(activeChats.size / 2);
 }
 
 module.exports = {
-  addToQueue,
-  getPartner,
-  disconnect,
-  isChatting,
-  removeWaiting
+isInQueue,
+removeFromQueue,
+isInChat,
+getPartner,
+startChat,
+endChat,
+queueUser,
+findBestPartner,
+nextChat,
+getQueueCount,
+getActiveCount
 };
