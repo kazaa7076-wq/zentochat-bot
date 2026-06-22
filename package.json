@@ -12,8 +12,7 @@
     "bot",
     "anonymous-chat",
     "telegraf",
-    "render",
-    "sqlite"
+    "render"
   ],
   "author": "ZentoChat",
   "license": "MIT",
