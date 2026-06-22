@@ -1,11 +1,61 @@
-if (userState[userId]) {
-  const state = userState[userId];
+require("dotenv").config();
+
+const express = require("express");
+const { Telegraf } = require("telegraf");
+
+const { botToken } = require("./config");
+
+const {
+  getUser,
+  addUser,
+  updateUser
+} = require("./database/db");
+
+const {
+  queueUser,
+  removeFromQueue,
+  isInQueue,
+  isInChat,
+  getPartner,
+  startChat,
+  endChat,
+  findBestPartner
+} = require("./services/matchService");
+
+const {
+  mainKeyboard,
+  genderKeyboard
+} = require("./ui/keyboards");
+
+if (!botToken) {
+  console.error("❌ BOT_TOKEN missing");
+  process.exit(1);
+}
+
+const bot = new Telegraf(botToken);
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("BOT IS RUNNING");
+});
+
+// ===== MEMORY STATE =====
+const userState = {};
+
+// ===== SAFE SEND =====
+async function safeSend(chatId, text, extra = {}) {
+  try {
+    await bot.telegram.sendMessage(chatId, text, extra);
+  } catch (e) {}
+}
+
+// ===== CONNECT LOGIC =====
 async function connectUser(ctx, userId) {
   const partnerId = findBestPartner(userId, getUser);
 
   if (!partnerId) {
     queueUser(userId);
-    return ctx.reply("🔎 در حال جستجو...");
+    return ctx.reply("🔎 در حال جستجو...", mainKeyboard());
   }
 
   removeFromQueue(partnerId);
@@ -16,108 +66,101 @@ async function connectUser(ctx, userId) {
 
   await safeSend(
     userId,
-`✅ وصل شدی!
-
-👤 پروفایل طرف مقابل:
-نام: ${p.name}
-سن: ${p.age}
-جنسیت: ${p.gender}
-بیو: ${p.bio || "-"}`,
+    `✅ وصل شدی\n\n👤 طرف مقابل:\n${p.name}\n${p.age}\n${p.gender}\n${p.bio || "-"}`,
     mainKeyboard()
   );
 
   await safeSend(
     partnerId,
-`✅ وصل شدی!
-
-👤 پروفایل طرف مقابل:
-نام: ${me.name}
-سن: ${me.age}
-جنسیت: ${me.gender}
-بیو: ${me.bio || "-"}`,
+    `✅ وصل شدی\n\n👤 طرف مقابل:\n${me.name}\n${me.age}\n${me.gender}\n${me.bio || "-"}`,
     mainKeyboard()
   );
 }
-  if (state.step === "name") {
-    state.name = text.trim();
-    state.step = "age";
-    return ctx.reply("🎂 سنت رو بفرست:");
-  }
-if (userState[userId]) {
-  const state = userState[userId];
 
-  if (state.step === "name") {
-    state.name = text.trim();
-    state.step = "age";
-    return ctx.reply("🎂 سنت رو بفرست:");
+// ===== START =====
+bot.start(async (ctx) => {
+  const id = ctx.from.id;
+
+  if (!getUser(id)) {
+    userState[id] = { step: "name" };
+    return ctx.reply("اسم خودتو بفرست:");
   }
 
-  if (state.step === "age") {
-    state.age = text.trim();
-    state.step = "bio";
-    return ctx.reply("✍️ بیوگرافی خودتو بنویس:");
-  }
+  return ctx.reply("خوش برگشتی 👋", mainKeyboard());
+});
 
-  if (state.step === "bio") {
-    state.bio = text.trim();
-    state.step = "gender";
-    return ctx.reply("👤 جنسیتت رو انتخاب کن:", genderKeyboard());
-  }
+// ===== TEXT HANDLER =====
+bot.on("text", async (ctx) => {
+  const id = ctx.from.id;
+  const text = ctx.message.text;
 
-  if (state.step === "gender") {
-    const gender = text.trim();
+  // ===== REGISTER FLOW =====
+  if (userState[id]) {
+    const s = userState[id];
 
-    addUser(userId, {
-      name: state.name,
-      age: state.age,
-      gender,
-      bio: state.bio || "",
-      preference: "all"
-    });
-
-    delete userState[userId];
-
-    return ctx.reply(
-      "✅ ثبت‌نام کامل شد.\nاز منو برای شروع چت استفاده کن.",
-      mainKeyboard()
-    );
-  }
-}
-  if (state.step === "age") {
-    state.age = text.trim();
-    state.step = "bio";
-    return ctx.reply("✍️ حالا بیوگرافی خودتو بنویس:");
-  }
-
-  if (state.step === "bio") {
-    state.bio = text.trim();
-    state.step = "gender";
-    return ctx.reply("👤 جنسیتت رو انتخاب کن:", genderKeyboard());
-  }
-
-  if (state.step === "gender") {
-    const gender = text.trim();
-
-    addUser(userId, {
-      name: state.name,
-      age: state.age,
-      gender,
-      bio: state.bio || "",
-      preference: "all"
-    });
-
-    if (state.referrer) {
-      const ok = setReferredBy(userId, state.referrer);
-      if (ok) {
-        giveReferralReward(state.referrer, userId);
-      }
+    if (s.step === "name") {
+      s.name = text;
+      s.step = "age";
+      return ctx.reply("سن؟");
     }
 
-    delete userState[userId];
+    if (s.step === "age") {
+      s.age = text;
+      s.step = "bio";
+      return ctx.reply("بیو بنویس:");
+    }
 
-    return ctx.reply(
-      "✅ ثبت‌نام کامل شد.\nاز منوی پایین می‌تونی چت رو شروع کنی.",
-      mainKeyboard()
-    );
+    if (s.step === "bio") {
+      s.bio = text;
+      s.step = "gender";
+      return ctx.reply("جنسیت:", genderKeyboard());
+    }
+
+    if (s.step === "gender") {
+      addUser(id, {
+        name: s.name,
+        age: s.age,
+        bio: s.bio,
+        gender: text,
+        preference: "all"
+      });
+
+      delete userState[id];
+
+      return ctx.reply("ثبت‌نام انجام شد ✅", mainKeyboard());
+    }
   }
-}
+
+  // ===== MENU =====
+  if (text === "🔍 شروع") {
+    return connectUser(ctx, id);
+  }
+
+  if (isInChat(id)) {
+    const p = getPartner(id);
+    return safeSend(p, `💬 ${text}`);
+  }
+});
+
+// ===== EXPRESS KEEP ALIVE =====
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("🌐 Server running on", PORT);
+});
+
+// ===== BOT START (IMPORTANT FIX) =====
+(async () => {
+  try {
+    await bot.launch({
+      dropPendingUpdates: true
+    });
+    console.log("🤖 BOT RUNNING ON RENDER");
+  } catch (err) {
+    console.error("BOT LAUNCH ERROR:", err.message);
+  }
+})();
+
+// ===== SAFE STOP =====
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));

@@ -1,83 +1,59 @@
 const queue = new Set();
 const chats = new Map();
 
-function queueUser(userId) {
-  queue.add(userId);
+function queueUser(id) {
+  queue.add(id);
 }
 
-function removeFromQueue(userId) {
-  queue.delete(userId);
+function removeFromQueue(id) {
+  queue.delete(id);
 }
 
-function isInQueue(userId) {
-  return queue.has(userId);
+function isInChat(id) {
+  return chats.has(id);
 }
 
-function startChat(u1, u2) {
-  chats.set(u1, u2);
-  chats.set(u2, u1);
+function getPartner(id) {
+  return chats.get(id);
 }
 
-function endChat(userId) {
-  const partner = chats.get(userId);
-  chats.delete(userId);
-  chats.delete(partner);
-  return partner;
+function startChat(a, b) {
+  chats.set(a, b);
+  chats.set(b, a);
 }
 
-function isInChat(userId) {
-  return chats.has(userId);
+function endChat(id) {
+  const p = chats.get(id);
+  chats.delete(id);
+  chats.delete(p);
+  return p;
 }
 
-function getPartner(userId) {
-  return chats.get(userId);
-}
-
-// 🔥 MATCH ENGINE حرفه‌ای
-function findBestPartner(userId, getUser) {
-  const me = getUser(userId);
+function findBestPartner(id, getUser) {
+  const me = getUser(id);
   if (!me) return null;
 
-  let best = null;
-  let bestScore = -1;
+  for (const pId of queue) {
+    if (pId === id) continue;
 
-  for (const id of queue) {
-    if (id === userId) continue;
-
-    const p = getUser(id);
+    const p = getUser(pId);
     if (!p) continue;
 
-    // 🎯 فیلتر جنسیت
     if (me.preference !== "all" && p.gender !== me.preference) continue;
     if (p.preference !== "all" && p.gender !== me.gender) continue;
 
-    let score = 0;
-
-    // ⭐ VIP priority
-    if (me.vipUntil > Date.now()) score += 5;
-    if (p.vipUntil > Date.now()) score += 5;
-
-    // ⭐ سن نزدیک‌تر بهتر
-    const myAge = Number(me.age || 0);
-    const pAge = Number(p.age || 0);
-    score += 10 - Math.abs(myAge - pAge);
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = id;
-    }
+    return pId;
   }
 
-  return best;
+  return null;
 }
 
 module.exports = {
   queueUser,
   removeFromQueue,
-  isInQueue,
-  startChat,
-  endChat,
   isInChat,
   getPartner,
+  startChat,
+  endChat,
   findBestPartner
 };
