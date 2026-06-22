@@ -1,6 +1,8 @@
 {
-"users": {},
-"tickets": {},
-"reports": [],
-"referrals": {}
+  "users": {},
+  "tickets": {},
+  "reports": [],
+  "stats": {
+    "totalMatches": 0
+  }
 }

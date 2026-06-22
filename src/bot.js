@@ -3,7 +3,14 @@ require("dotenv").config();
 const express = require("express");
 const { Telegraf } = require("telegraf");
 
-const { botToken, adminId, botUsername } = require("./config");
+const {
+  botToken,
+  adminId,
+  botUsername,
+  port,
+  appName
+} = require("./config");
+
 const {
   getUser,
   addUser,
@@ -11,19 +18,16 @@ const {
   setVip,
   addCoins,
   addReport,
-  blockUser,
-  unblockUser,
   createTicket,
   getTicket,
-  getOpenTickets,
   closeTicket,
   getStatsSummary,
   setReferredBy,
-  getReports,
-  createPayment,
-  getPayments,
-  approvePayment,
-  rejectPayment
+  setUserBio,
+  setUserCity,
+  setUserPhoto,
+  setUserAgeRange,
+  setUserCityFilter
 } = require("./database/db");
 
 const {
@@ -49,13 +53,6 @@ const {
   walletInfo
 } = require("./services/monetizationService");
 
-const {
-  mainKeyboard,
-  genderKeyboard,
-  preferenceKeyboard,
-  vipKeyboard
-} = require("./ui/keyboards");
-
 if (!botToken) {
   console.error("❌ BOT_TOKEN تنظیم نشده");
   process.exit(1);
@@ -64,11 +61,105 @@ if (!botToken) {
 const bot = new Telegraf(botToken);
 const app = express();
 
+// ================= STATE =================
 const userState = {};
 const supportState = {};
 const reportState = {};
-const paymentState = {};
+const profileEditState = {};
 
+// ================= KEYBOARDS =================
+function mainKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["🔍 شروع جستجو", "⏭ کاربر بعدی"],
+        ["❌ پایان چت", "🚨 گزارش کاربر"],
+        ["👤 پروفایل من", "📝 ویرایش پروفایل"],
+        ["🎯 تنظیمات فیلتر", "💰 کیف پول"],
+        ["🎁 جایزه روزانه", "⚡ بوست"],
+        ["💎 VIP", "👥 دعوت دوستان"],
+        ["📩 پشتیبانی"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+function genderKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [["مرد", "زن", "سایر"]],
+      resize_keyboard: true,
+      one_time_keyboard: true
+    }
+  };
+}
+
+function preferenceKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["همه", "فقط مرد"],
+        ["فقط زن", "فقط سایر"],
+        ["🔙 بازگشت"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+function profileEditKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["✏️ تغییر اسم", "🎂 تغییر سن"],
+        ["🏙 تغییر شهر", "📝 تغییر بیو"],
+        ["🖼 تغییر عکس پروفایل"],
+        ["🔙 بازگشت"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+function filterKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["👫 ترجیح جنسیت", "🎂 بازه سنی"],
+        ["🏙 فیلتر شهر", "👤 دیدن فیلتر فعلی"],
+        ["🔙 بازگشت"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+function cityFilterKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["همه شهرها", "فقط هم‌شهری"],
+        ["🔙 بازگشت"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+function vipKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["💎 خرید VIP 7 روزه", "💎 خرید VIP 30 روزه"],
+        ["🔙 بازگشت"]
+      ],
+      resize_keyboard: true
+    }
+  };
+}
+
+// ================= HELPERS =================
 function isAdmin(ctx) {
   return String(ctx.from.id) === String(adminId);
 }
@@ -80,29 +171,79 @@ function normalizePreference(text) {
   return "all";
 }
 
+function formatPreference(pref) {
+  if (!pref || pref === "all") return "همه";
+  return pref;
+}
+
+function formatCityFilter(user) {
+  return user.cityFilter === "same" ? "فقط هم‌شهری" : "همه شهرها";
+}
+
 function profileText(user) {
   const vip = Number(user.vipUntil || 0) > Date.now() ? "فعال" : "غیرفعال";
-  const boost = Number(user.boostUntil || 0) > Date.now() ? "فعال" : "غیرفعال";
-
   return [
     "👤 پروفایل شما",
-    `🆔 آیدی: ${user.id}`,
     `اسم: ${user.name || "-"}`,
     `سن: ${user.age || "-"}`,
     `جنسیت: ${user.gender || "-"}`,
-    `ترجیح چت: ${user.preference === "all" ? "همه" : user.preference}`,
+    `شهر: ${user.city || "-"}`,
+    `بیو: ${user.bio || "-"}`,
+    `ترجیح چت: ${formatPreference(user.preference)}`,
+    `بازه سنی دلخواه: ${user.minAge ?? 0} تا ${user.maxAge ?? 99}`,
+    `فیلتر شهر: ${formatCityFilter(user)}`,
     `سکه: ${user.coins || 0}`,
-    `VIP: ${vip}`,
-    `Boost: ${boost}`,
-    `دعوت موفق: ${user.referralsCount || 0}`
+    `VIP: ${vip}`
+  ].join("\n");
+}
+
+function partnerProfileText(user) {
+  return [
+    "👤 پروفایل طرف مقابل",
+    `اسم: ${user.name || "-"}`,
+    `سن: ${user.age || "-"}`,
+    `جنسیت: ${user.gender || "-"}`,
+    `شهر: ${user.city || "-"}`,
+    `بیو: ${user.bio || "-"}`
+  ].join("\n");
+}
+
+function filterSummaryText(user) {
+  return [
+    "🎯 فیلتر فعلی شما",
+    `ترجیح جنسیت: ${formatPreference(user.preference)}`,
+    `بازه سنی: ${user.minAge ?? 0} تا ${user.maxAge ?? 99}`,
+    `فیلتر شهر: ${formatCityFilter(user)}`
   ].join("\n");
 }
 
 async function safeSend(chatId, text, extra = {}) {
   try {
     await bot.telegram.sendMessage(chatId, text, extra);
-  } catch (e) {
-    console.error("safeSend error:", e.message);
+  } catch (_) {}
+}
+
+async function safeSendPhoto(chatId, fileId, extra = {}) {
+  try {
+    await bot.telegram.sendPhoto(chatId, fileId, extra);
+  } catch (_) {}
+}
+
+function clearUserFlows(userId) {
+  delete supportState[userId];
+  delete reportState[userId];
+  delete profileEditState[userId];
+}
+
+async function sendPartnerProfile(toUserId, partnerUser) {
+  if (!partnerUser) return;
+
+  if (partnerUser.profilePhoto) {
+    await safeSendPhoto(toUserId, partnerUser.profilePhoto, {
+      caption: partnerProfileText(partnerUser)
+    });
+  } else {
+    await safeSend(toUserId, partnerProfileText(partnerUser));
   }
 }
 
@@ -120,43 +261,33 @@ async function connectUser(ctx, userId) {
   removeFromQueue(partnerId);
   startChat(userId, partnerId);
 
+  const me = getUser(userId);
+  const partner = getUser(partnerId);
+
   await safeSend(
     userId,
-    "✅ به یک کاربر ناشناس وصل شدی.\nمی‌تونی پیام، عکس، ویس، ویدیو و فایل بفرستی.",
+    "✅ به یک کاربر ناشناس وصل شدی.\nمی‌تونی پیام، عکس، ویس و... بفرستی.",
     mainKeyboard()
   );
+
+  await sendPartnerProfile(userId, partner);
 
   await safeSend(
     partnerId,
     "✅ یک کاربر ناشناس بهت وصل شد.\nچت شروع شد.",
     mainKeyboard()
   );
+
+  await sendPartnerProfile(partnerId, me);
 }
 
-async function adminHelp(ctx) {
-  return ctx.reply(
-    [
-      "🛠 پنل ادمین",
-      "/stats → آمار کلی",
-      "/reports → لیست گزارش‌ها",
-      "/tickets → لیست تیکت‌های باز",
-      "/payments → لیست درخواست‌های پرداخت",
-      "/givecoins USER_ID AMOUNT",
-      "/givevip USER_ID DAYS",
-      "/block USER_ID دلیل",
-      "/unblock USER_ID",
-      "/answer TICKET_ID پیام",
-      "/approvepay PAYMENT_ID",
-      "/rejectpay PAYMENT_ID"
-    ].join("\n")
-  );
-}
-
-// ---------- START ----------
+// ================= START =================
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   const payload = ctx.startPayload || "";
   const existing = getUser(userId);
+
+  clearUserFlows(userId);
 
   if (!existing) {
     userState[userId] = { step: "name" };
@@ -167,7 +298,7 @@ bot.start(async (ctx) => {
     }
 
     return ctx.reply(
-      "👋 به ZentoChat PRO MAX خوش اومدی\n\nاسم خودتو بفرست:",
+      `👋 به ${appName || "ZentoChat PRO MAX"} خوش اومدی\n\nاسم خودتو بفرست:`,
       mainKeyboard()
     );
   }
@@ -178,68 +309,28 @@ bot.start(async (ctx) => {
   );
 });
 
-// ---------- TEXT ROUTER ----------
+// ================= TEXT ROUTER =================
 bot.on("text", async (ctx, next) => {
   const userId = ctx.from.id;
   const text = (ctx.message.text || "").trim();
 
-  // =========================
-  // ADMIN COMMANDS
-  // =========================
-  if (text === "/admin" && isAdmin(ctx)) {
-    return adminHelp(ctx);
-  }
-
-  if (text === "/stats" && isAdmin(ctx)) {
+  // ===== ADMIN =====
+  if (text.startsWith("/stats") && isAdmin(ctx)) {
     const s = getStatsSummary();
     return ctx.reply(
       [
         "📊 آمار ربات",
         `👥 کل کاربران: ${s.totalUsers}`,
         `💎 VIP ها: ${s.vipUsers}`,
-        `⚡ Boost فعال: ${s.boostedUsers}`,
+        `⚡ بوست فعال: ${s.boostedUsers}`,
         `🪙 مجموع سکه‌ها: ${s.totalCoins}`,
-        `🚨 تعداد گزارش‌ها: ${s.totalReports}`,
-        `🎫 تیکت باز: ${s.totalOpenTickets}`,
-        `💳 کل پرداخت‌ها: ${s.totalPayments}`,
-        `⏳ پرداخت‌های در انتظار: ${s.pendingPayments}`,
+        `🚫 کاربران بلاک‌شده: ${s.blockedUsers}`,
+        `🧾 گزارش‌ها: ${s.totalReports}`,
+        `🤝 کل مچ‌ها: ${s.totalMatches}`,
         `🔎 در صف: ${getQueueCount()}`,
         `💬 چت‌های فعال: ${getActiveCount()}`
       ].join("\n")
     );
-  }
-
-  if (text === "/reports" && isAdmin(ctx)) {
-    const reports = getReports().slice(0, 15);
-    if (!reports.length) return ctx.reply("گزارشی وجود ندارد.");
-
-    const msg = reports.map((r, i) =>
-      `${i + 1}) ${r.id}\nReporter: ${r.reporterId}\nTarget: ${r.targetId}\nReason: ${r.reason}\n`
-    ).join("\n");
-
-    return ctx.reply(`🚨 آخرین گزارش‌ها:\n\n${msg}`);
-  }
-
-  if (text === "/tickets" && isAdmin(ctx)) {
-    const tickets = getOpenTickets().slice(0, 15);
-    if (!tickets.length) return ctx.reply("تیکت بازی وجود ندارد.");
-
-    const msg = tickets.map((t, i) =>
-      `${i + 1}) ${t.id}\nUser: ${t.userId}\nMessage: ${t.message}\n`
-    ).join("\n");
-
-    return ctx.reply(`🎫 تیکت‌های باز:\n\n${msg}`);
-  }
-
-  if (text === "/payments" && isAdmin(ctx)) {
-    const payments = getPayments("pending").slice(0, 15);
-    if (!payments.length) return ctx.reply("درخواست پرداختی در انتظار نیست.");
-
-    const msg = payments.map((p, i) =>
-      `${i + 1}) ${p.id}\nUser: ${p.userId}\nType: ${p.type}\nAmount: ${p.amount}\nReceipt: ${p.meta?.receipt || "-"}\n`
-    ).join("\n");
-
-    return ctx.reply(`💳 پرداخت‌های در انتظار:\n\n${msg}`);
   }
 
   if (text.startsWith("/givecoins") && isAdmin(ctx)) {
@@ -252,7 +343,6 @@ bot.on("text", async (ctx, next) => {
     }
 
     addCoins(target, amount);
-    await safeSend(target, `🪙 ${amount} سکه از طرف ادمین به حسابت اضافه شد.`);
     return ctx.reply(`✅ ${amount} سکه به ${target} داده شد.`);
   }
 
@@ -266,31 +356,7 @@ bot.on("text", async (ctx, next) => {
     }
 
     setVip(target, days);
-    await safeSend(target, `💎 VIP ${days} روزه برایت توسط ادمین فعال شد.`);
     return ctx.reply(`✅ VIP ${days} روزه برای ${target} فعال شد.`);
-  }
-
-  if (text.startsWith("/block") && isAdmin(ctx)) {
-    const parts = text.split(" ");
-    const target = parts[1];
-    const reason = parts.slice(2).join(" ") || "بدون دلیل";
-
-    if (!target) return ctx.reply("فرمت: /block USER_ID دلیل");
-
-    blockUser(target, reason);
-    await safeSend(target, `⛔️ حساب شما توسط ادمین مسدود شد.\nدلیل: ${reason}`);
-    return ctx.reply(`⛔️ کاربر ${target} بلاک شد.`);
-  }
-
-  if (text.startsWith("/unblock") && isAdmin(ctx)) {
-    const parts = text.split(" ");
-    const target = parts[1];
-
-    if (!target) return ctx.reply("فرمت: /unblock USER_ID");
-
-    unblockUser(target);
-    await safeSend(target, "✅ محدودیت حساب شما برداشته شد.");
-    return ctx.reply(`✅ کاربر ${target} آنبلاک شد.`);
   }
 
   if (text.startsWith("/answer") && isAdmin(ctx)) {
@@ -306,46 +372,12 @@ bot.on("text", async (ctx, next) => {
     if (!ticket) return ctx.reply("❌ تیکت پیدا نشد");
 
     await safeSend(ticket.userId, `📩 پاسخ پشتیبانی:\n\n${message}`);
-    closeTicket(ticketId, message);
+    closeTicket(ticketId);
 
     return ctx.reply("✅ پاسخ ارسال شد.");
   }
 
-  if (text.startsWith("/approvepay") && isAdmin(ctx)) {
-    const parts = text.split(" ");
-    const paymentId = parts[1];
-    if (!paymentId) return ctx.reply("فرمت: /approvepay PAYMENT_ID");
-
-    const payment = approvePayment(paymentId);
-    if (!payment) return ctx.reply("❌ پرداخت پیدا نشد.");
-
-    await safeSend(
-      payment.userId,
-      `✅ پرداخت شما تایید شد.\nنوع: ${payment.type}\nVIP/سرویس شما فعال شد.`
-    );
-
-    return ctx.reply(`✅ پرداخت ${paymentId} تایید شد.`);
-  }
-
-  if (text.startsWith("/rejectpay") && isAdmin(ctx)) {
-    const parts = text.split(" ");
-    const paymentId = parts[1];
-    if (!paymentId) return ctx.reply("فرمت: /rejectpay PAYMENT_ID");
-
-    const payment = rejectPayment(paymentId);
-    if (!payment) return ctx.reply("❌ پرداخت پیدا نشد.");
-
-    await safeSend(
-      payment.userId,
-      `❌ پرداخت شما رد شد.\nاگر فکر می‌کنی اشتباهی شده به پشتیبانی پیام بده.`
-    );
-
-    return ctx.reply(`❌ پرداخت ${paymentId} رد شد.`);
-  }
-
-  // =========================
-  // REGISTER FLOW
-  // =========================
+  // ===== REGISTER FLOW =====
   if (userState[userId]) {
     const state = userState[userId];
 
@@ -356,19 +388,40 @@ bot.on("text", async (ctx, next) => {
     }
 
     if (state.step === "age") {
-      state.age = text;
+      const age = Number(text);
+      if (!age || age < 1 || age > 99) {
+        return ctx.reply("❌ سن معتبر بفرست. مثال: 21");
+      }
+
+      state.age = age;
       state.step = "gender";
       return ctx.reply("👤 جنسیتت رو انتخاب کن:", genderKeyboard());
     }
 
     if (state.step === "gender") {
-      const gender = text;
+      if (!["مرد", "زن", "سایر"].includes(text)) {
+        return ctx.reply("❌ یکی از گزینه‌های جنسیت را انتخاب کن.", genderKeyboard());
+      }
 
-      const user = addUser(userId, {
+      state.gender = text;
+      state.step = "city";
+      return ctx.reply("🏙 شهرت رو بفرست:");
+    }
+
+    if (state.step === "city") {
+      const city = text;
+
+      addUser(userId, {
         name: state.name,
         age: state.age,
-        gender,
-        preference: "all"
+        gender: state.gender,
+        city,
+        bio: "",
+        profilePhoto: "",
+        preference: "all",
+        minAge: 0,
+        maxAge: 99,
+        cityFilter: "all"
       });
 
       if (state.referrer) {
@@ -381,15 +434,13 @@ bot.on("text", async (ctx, next) => {
       delete userState[userId];
 
       return ctx.reply(
-        `✅ ثبت‌نام کامل شد.\n\n${profileText(user)}\n\nاز منوی پایین می‌تونی چت رو شروع کنی.`,
+        "✅ ثبت‌نام کامل شد.\nاز منوی پایین می‌تونی چت رو شروع کنی.",
         mainKeyboard()
       );
     }
   }
 
-  // =========================
-  // SUPPORT FLOW
-  // =========================
+  // ===== SUPPORT FLOW =====
   if (supportState[userId]) {
     const ticketId = createTicket(userId, text);
     delete supportState[userId];
@@ -402,9 +453,7 @@ bot.on("text", async (ctx, next) => {
     return ctx.reply("✅ پیام پشتیبانی‌ات ارسال شد.", mainKeyboard());
   }
 
-  // =========================
-  // REPORT FLOW
-  // =========================
+  // ===== REPORT FLOW =====
   if (reportState[userId]) {
     const partnerId = getPartner(userId);
     if (partnerId) {
@@ -414,49 +463,73 @@ bot.on("text", async (ctx, next) => {
     return ctx.reply("🚨 گزارش ثبت شد. ممنون.", mainKeyboard());
   }
 
-  // =========================
-  // PAYMENT FLOW
-  // =========================
-  if (paymentState[userId]) {
-    const state = paymentState[userId];
+  // ===== PROFILE EDIT FLOW =====
+  if (profileEditState[userId]) {
+    const mode = profileEditState[userId];
 
-    const payment = createPayment(userId, state.type, state.amount, {
-      receipt: text
-    });
+    if (mode === "name") {
+      updateUser(userId, { name: text });
+      delete profileEditState[userId];
+      return ctx.reply("✅ اسم پروفایل ذخیره شد.", mainKeyboard());
+    }
 
-    delete paymentState[userId];
+    if (mode === "age") {
+      const age = Number(text);
+      if (!age || age < 1 || age > 99) {
+        return ctx.reply("❌ سن معتبر بفرست.");
+      }
 
-    await safeSend(
-      adminId,
-      [
-        "💳 درخواست پرداخت جدید",
-        `Payment ID: ${payment.id}`,
-        `User: ${userId}`,
-        `Type: ${payment.type}`,
-        `Amount: ${payment.amount}`,
-        `Receipt: ${text}`
-      ].join("\n")
-    );
+      updateUser(userId, { age });
+      delete profileEditState[userId];
+      return ctx.reply("✅ سن ذخیره شد.", mainKeyboard());
+    }
 
-    return ctx.reply(
-      "✅ درخواست پرداخت ثبت شد.\nرسید/توضیح شما برای ادمین ارسال شد و بعد از تایید، VIP فعال می‌شود.",
-      mainKeyboard()
-    );
+    if (mode === "city") {
+      setUserCity(userId, text);
+      delete profileEditState[userId];
+      return ctx.reply("✅ شهر ذخیره شد.", mainKeyboard());
+    }
+
+    if (mode === "bio") {
+      setUserBio(userId, text);
+      delete profileEditState[userId];
+      return ctx.reply("✅ بیو ذخیره شد.", mainKeyboard());
+    }
+
+    if (mode === "ageRange") {
+      const cleaned = text.replace(/تا/g, "-").replace(/\s+/g, "");
+      const parts = cleaned.split("-");
+
+      if (parts.length !== 2) {
+        return ctx.reply("❌ فرمت درست: 18-30");
+      }
+
+      const minAge = Number(parts[0]);
+      const maxAge = Number(parts[1]);
+
+      if (
+        Number.isNaN(minAge) ||
+        Number.isNaN(maxAge) ||
+        minAge < 0 ||
+        maxAge > 99
+      ) {
+        return ctx.reply("❌ بازه سنی معتبر نیست. مثال: 18-30");
+      }
+
+      setUserAgeRange(userId, minAge, maxAge);
+      delete profileEditState[userId];
+      return ctx.reply("✅ بازه سنی ذخیره شد.", mainKeyboard());
+    }
   }
 
-  // =========================
-  // MAIN MENU ACTIONS
-  // =========================
+  // ===== USER CHECK =====
   const user = getUser(userId);
 
   if (!user) {
     return ctx.reply("اول /start بزن و ثبت‌نام کن.");
   }
 
-  if (user.blocked) {
-    return ctx.reply(`⛔️ حساب شما محدود شده است.\nدلیل: ${user.blockedReason || "-"}`);
-  }
-
+  // ===== MAIN MENU =====
   if (text === "🔍 شروع جستجو") {
     if (isInChat(userId)) {
       return ctx.reply("💬 الان داخل چت هستی. برای نفر بعدی «⏭ کاربر بعدی» را بزن.");
@@ -477,7 +550,7 @@ bot.on("text", async (ctx, next) => {
     if (isInChat(userId)) {
       const oldPartner = nextChat(userId);
       if (oldPartner) {
-        await safeSend(oldPartner, "⏭ طرف مقابل به چت بعدی رفت.");
+        await safeSend(oldPartner, "⏭ طرف مقابل به چت بعدی رفت.", mainKeyboard());
       }
       return connectUser(ctx, userId);
     }
@@ -510,6 +583,84 @@ bot.on("text", async (ctx, next) => {
     return ctx.reply("علت گزارش را در یک پیام بنویس:");
   }
 
+  // ===== PROFILE =====
+  if (text === "👤 پروفایل من") {
+    return ctx.reply(profileText(user), mainKeyboard());
+  }
+
+  if (text === "📝 ویرایش پروفایل") {
+    return ctx.reply("بخش ویرایش پروفایل:", profileEditKeyboard());
+  }
+
+  if (text === "✏️ تغییر اسم") {
+    profileEditState[userId] = "name";
+    return ctx.reply("اسم جدیدت را بفرست:");
+  }
+
+  if (text === "🎂 تغییر سن") {
+    profileEditState[userId] = "age";
+    return ctx.reply("سن جدیدت را بفرست:");
+  }
+
+  if (text === "🏙 تغییر شهر") {
+    profileEditState[userId] = "city";
+    return ctx.reply("شهر جدیدت را بفرست:");
+  }
+
+  if (text === "📝 تغییر بیو") {
+    profileEditState[userId] = "bio";
+    return ctx.reply("بیوی جدیدت را بفرست:");
+  }
+
+  if (text === "🖼 تغییر عکس پروفایل") {
+    profileEditState[userId] = "photo";
+    return ctx.reply("عکس پروفایلت را به‌صورت عکس بفرست:");
+  }
+
+  // ===== FILTERS =====
+  if (text === "🎯 تنظیمات فیلتر") {
+    return ctx.reply("تنظیمات فیلتر:", filterKeyboard());
+  }
+
+  if (text === "👫 ترجیح جنسیت") {
+    return ctx.reply("ترجیح چتت را انتخاب کن:", preferenceKeyboard());
+  }
+
+  if (
+    text === "همه" ||
+    text === "فقط مرد" ||
+    text === "فقط زن" ||
+    text === "فقط سایر"
+  ) {
+    const pref = normalizePreference(text);
+    updateUser(userId, { preference: pref });
+    return ctx.reply("✅ ترجیح چت ذخیره شد.", mainKeyboard());
+  }
+
+  if (text === "🎂 بازه سنی") {
+    profileEditState[userId] = "ageRange";
+    return ctx.reply("بازه سنی را به این شکل بفرست:\n18-30");
+  }
+
+  if (text === "🏙 فیلتر شهر") {
+    return ctx.reply("نوع فیلتر شهر را انتخاب کن:", cityFilterKeyboard());
+  }
+
+  if (text === "همه شهرها") {
+    setUserCityFilter(userId, "all");
+    return ctx.reply("✅ فیلتر شهر روی «همه شهرها» تنظیم شد.", mainKeyboard());
+  }
+
+  if (text === "فقط هم‌شهری") {
+    setUserCityFilter(userId, "same");
+    return ctx.reply("✅ فیلتر شهر روی «فقط هم‌شهری» تنظیم شد.", mainKeyboard());
+  }
+
+  if (text === "👤 دیدن فیلتر فعلی") {
+    return ctx.reply(filterSummaryText(user), filterKeyboard());
+  }
+
+  // ===== WALLET / VIP =====
   if (text === "💰 کیف پول") {
     const wallet = walletInfo(userId);
     return ctx.reply(
@@ -520,9 +671,7 @@ bot.on("text", async (ctx, next) => {
         "قیمت‌ها:",
         "⚡ بوست 10 دقیقه: 25 سکه",
         "💎 VIP 7 روزه: 150 سکه",
-        "💎 VIP 30 روزه: 500 سکه",
-        "",
-        "برای خرید VIP با سکه از منوی VIP استفاده کن."
+        "💎 VIP 30 روزه: 500 سکه"
       ].join("\n"),
       mainKeyboard()
     );
@@ -542,8 +691,7 @@ bot.on("text", async (ctx, next) => {
     return ctx.reply(
       [
         "💎 بخش VIP",
-        "1) خرید VIP با سکه",
-        "2) ثبت درخواست پرداخت دستی برای VIP",
+        "با VIP می‌تونی سریع‌تر مچ بشی و تجربه بهتری داشته باشی.",
         "",
         "انتخاب کن:"
       ].join("\n"),
@@ -561,49 +709,7 @@ bot.on("text", async (ctx, next) => {
     return ctx.reply(result.message, mainKeyboard());
   }
 
-  if (text === "💳 درخواست VIP 7 روزه") {
-    paymentState[userId] = {
-      type: "vip7",
-      amount: 150
-    };
-
-    return ctx.reply(
-      "رسید پرداخت یا توضیح پرداخت VIP 7 روزه را در یک پیام بفرست.\n(مثلاً شماره پیگیری یا توضیح کارت‌به‌کارت)",
-      mainKeyboard()
-    );
-  }
-
-  if (text === "💳 درخواست VIP 30 روزه") {
-    paymentState[userId] = {
-      type: "vip30",
-      amount: 500
-    };
-
-    return ctx.reply(
-      "رسید پرداخت یا توضیح پرداخت VIP 30 روزه را در یک پیام بفرست.\n(مثلاً شماره پیگیری یا توضیح کارت‌به‌کارت)",
-      mainKeyboard()
-    );
-  }
-
-  if (text === "👤 پروفایل") {
-    return ctx.reply(profileText(user), mainKeyboard());
-  }
-
-  if (text === "🎯 ترجیح چت") {
-    return ctx.reply("ترجیح چتت را انتخاب کن:", preferenceKeyboard());
-  }
-
-  if (
-    text === "همه" ||
-    text === "فقط مرد" ||
-    text === "فقط زن" ||
-    text === "فقط سایر"
-  ) {
-    const pref = normalizePreference(text);
-    updateUser(userId, { preference: pref });
-    return ctx.reply("✅ ترجیح چت ذخیره شد.", mainKeyboard());
-  }
-
+  // ===== REFERRAL =====
   if (text === "👥 دعوت دوستان") {
     const ref = referralInfo(userId);
     const link = `https://t.me/${botUsername}?start=ref_${userId}`;
@@ -615,25 +721,24 @@ bot.on("text", async (ctx, next) => {
         link,
         "",
         `👤 تعداد دعوت‌های موفق: ${ref.count}`,
-        `🎁 پاداش تو: ${ref.inviterReward} سکه`,
-        `🎁 پاداش دوستت: ${ref.newUserReward} سکه`
+        "🎁 پاداش: برای هر دعوت موفق، تو 50 سکه و دوستت 20 سکه می‌گیرید."
       ].join("\n"),
       mainKeyboard()
     );
   }
 
+  // ===== SUPPORT =====
   if (text === "📩 پشتیبانی") {
     supportState[userId] = true;
     return ctx.reply("پیامت برای پشتیبانی را در یک پیام بفرست:");
   }
 
   if (text === "🔙 بازگشت") {
+    clearUserFlows(userId);
     return ctx.reply("برگشتی به منوی اصلی.", mainKeyboard());
   }
 
-  // =========================
-  // RELAY TO PARTNER
-  // =========================
+  // ===== RELAY TEXT =====
   if (isInChat(userId)) {
     const partner = getPartner(userId);
     if (partner) {
@@ -644,9 +749,19 @@ bot.on("text", async (ctx, next) => {
   return next();
 });
 
-// ---------- MEDIA RELAY ----------
+// ================= PHOTO =================
 bot.on("photo", async (ctx) => {
   const userId = ctx.from.id;
+
+  // اگر در حالت ثبت عکس پروفایل بود
+  if (profileEditState[userId] === "photo") {
+    const photo = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    setUserPhoto(userId, photo);
+    delete profileEditState[userId];
+    return ctx.reply("✅ عکس پروفایل ذخیره شد.", mainKeyboard());
+  }
+
+  // در غیر این صورت اگر داخل چت بود، عکس را برای طرف مقابل بفرست
   if (!isInChat(userId)) return;
 
   const partner = getPartner(userId);
@@ -659,11 +774,10 @@ bot.on("photo", async (ctx) => {
     await bot.telegram.sendPhoto(partner, photo, {
       caption: caption ? `📷 ناشناس:\n${caption}` : "📷 ناشناس"
     });
-  } catch (e) {
-    console.error("photo relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
+// ================= VOICE =================
 bot.on("voice", async (ctx) => {
   const userId = ctx.from.id;
   if (!isInChat(userId)) return;
@@ -675,11 +789,10 @@ bot.on("voice", async (ctx) => {
     await bot.telegram.sendVoice(partner, ctx.message.voice.file_id, {
       caption: "🎤 ویس ناشناس"
     });
-  } catch (e) {
-    console.error("voice relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
+// ================= VIDEO =================
 bot.on("video", async (ctx) => {
   const userId = ctx.from.id;
   if (!isInChat(userId)) return;
@@ -691,11 +804,10 @@ bot.on("video", async (ctx) => {
     await bot.telegram.sendVideo(partner, ctx.message.video.file_id, {
       caption: "🎬 ویدیو ناشناس"
     });
-  } catch (e) {
-    console.error("video relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
+// ================= STICKER =================
 bot.on("sticker", async (ctx) => {
   const userId = ctx.from.id;
   if (!isInChat(userId)) return;
@@ -705,11 +817,10 @@ bot.on("sticker", async (ctx) => {
 
   try {
     await bot.telegram.sendSticker(partner, ctx.message.sticker.file_id);
-  } catch (e) {
-    console.error("sticker relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
+// ================= DOCUMENT =================
 bot.on("document", async (ctx) => {
   const userId = ctx.from.id;
   if (!isInChat(userId)) return;
@@ -721,11 +832,10 @@ bot.on("document", async (ctx) => {
     await bot.telegram.sendDocument(partner, ctx.message.document.file_id, {
       caption: "📎 فایل ناشناس"
     });
-  } catch (e) {
-    console.error("document relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
+// ================= AUDIO =================
 bot.on("audio", async (ctx) => {
   const userId = ctx.from.id;
   if (!isInChat(userId)) return;
@@ -737,31 +847,33 @@ bot.on("audio", async (ctx) => {
     await bot.telegram.sendAudio(partner, ctx.message.audio.file_id, {
       caption: "🎵 فایل صوتی ناشناس"
     });
-  } catch (e) {
-    console.error("audio relay error:", e.message);
-  }
+  } catch (_) {}
 });
 
-// ---------- SERVER ----------
+// ================= SERVER =================
 app.get("/", (req, res) => {
-  res.send("ZentoChat PRO MAX is running");
+  res.send(`${appName || "ZentoChat PRO MAX"} is running`);
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = port || process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Server listening on port ${PORT}`);
 });
 
+// ================= ERROR HANDLING =================
 bot.catch((err) => {
   console.error("Bot Error:", err);
 });
 
-bot.launch()
+// Render-safe launch
+bot
+  .launch({ dropPendingUpdates: true })
   .then(() => {
-    console.log("🔥 ZentoChat PRO MAX RUNNING");
+    console.log(`🔥 ${appName || "ZentoChat PRO MAX"} RUNNING`);
   })
   .catch((err) => {
-    console.error("Launch Error:", err);
+    console.error("Launch Error:", err.message || err);
+    console.log("⚠️ ربات به تلگرام وصل نشد ولی سرور همچنان بالا ماند.");
   });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
