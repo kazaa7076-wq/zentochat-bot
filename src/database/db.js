@@ -109,7 +109,7 @@ blocked: [],
 stats: { chats: 0, nexts: 0, reports: 0 },
 createdAt: Date.now()
 };
-
+bio: user.bio || ""
 db.users[id] = {
 ...base,
 ...patch,

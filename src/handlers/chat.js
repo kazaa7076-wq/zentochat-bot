@@ -78,17 +78,32 @@ async function nextPartner(ctx) {
   increaseChatCount(userId);
   increaseChatCount(partner);
 
-  await ctx.telegram.sendMessage(
-    userId,
-    "✅ به کاربر جدید متصل شدی.",
-    mainKeyboard
-  );
+  const user = getUser(userId);
+const partner = getUser(partnerId);
 
-  await ctx.telegram.sendMessage(
-    partner,
-    "✅ به یک کاربر ناشناس متصل شدی.",
-    mainKeyboard
-  );
+await safeSend(
+  userId,
+`✅ وصل شدی!
+
+👤 پروفایل طرف مقابل:
+نام: ${partner.name}
+سن: ${partner.age}
+جنسیت: ${partner.gender}
+بیو: ${partner.bio || "-"}`,
+mainKeyboard()
+);
+
+await safeSend(
+  partnerId,
+`✅ وصل شدی!
+
+👤 پروفایل طرف مقابل:
+نام: ${user.name}
+سن: ${user.age}
+جنسیت: ${user.gender}
+بیو: ${user.bio || "-"}`,
+mainKeyboard()
+);
 }
 
 async function endChat(ctx) {
