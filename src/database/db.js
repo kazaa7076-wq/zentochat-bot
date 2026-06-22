@@ -1,76 +1,44 @@
-const sqlite3 = require("sqlite3").verbose();
+const fs = require("fs");
+const path = require("path");
 
-const db = new sqlite3.Database("./database.sqlite");
+// مسیر فایل دیتابیس
+const dbFile = path.join(__dirname, "data.json");
 
-db.serialize(() => {
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      telegram_id INTEGER PRIMARY KEY,
-      chats_count INTEGER DEFAULT 0,
-      reports INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS reports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      reporter_id INTEGER,
-      reported_id INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-});
-
-function addUser(userId) {
-  db.run(
-    `INSERT OR IGNORE INTO users (telegram_id) VALUES (?)`,
-    [userId]
-  );
+// اگر فایل وجود نداشت بساز
+function initDB() {
+  if (!fs.existsSync(dbFile)) {
+    fs.writeFileSync(dbFile, JSON.stringify({}, null, 2));
+  }
 }
 
-function increaseChatCount(userId) {
-  db.run(
-    `UPDATE users
-     SET chats_count = chats_count + 1
-     WHERE telegram_id = ?`,
-    [userId]
-  );
+// خواندن دیتابیس
+function readDB() {
+  initDB();
+  const data = fs.readFileSync(dbFile, "utf-8");
+  return JSON.parse(data);
 }
 
-function addReport(reporter, reported) {
-  db.run(
-    `INSERT INTO reports (reporter_id, reported_id)
-     VALUES (?, ?)`,
-    [reporter, reported]
-  );
-
-  db.run(
-    `UPDATE users
-     SET reports = reports + 1
-     WHERE telegram_id = ?`,
-    [reported]
-  );
+// نوشتن در دیتابیس
+function writeDB(data) {
+  fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
 }
 
-function getUserCount() {
-  return new Promise((resolve) => {
-    db.get(
-      `SELECT COUNT(*) AS total FROM users`,
-      [],
-      (err, row) => {
-        resolve(row?.total || 0);
-      }
-    );
-  });
+// گرفتن کاربر
+function getUser(userId) {
+  const db = readDB();
+  return db[userId] || null;
+}
+
+// ذخیره کاربر
+function setUser(userId, userData) {
+  const db = readDB();
+  db[userId] = userData;
+  writeDB(db);
 }
 
 module.exports = {
-  db,
-  addUser,
-  increaseChatCount,
-  addReport,
-  getUserCount
+  readDB,
+  writeDB,
+  getUser,
+  setUser,
 };
