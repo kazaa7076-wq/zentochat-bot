@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const { Telegraf } = require("telegraf");
-const { botToken } = require("./config");
+const botToken = process.env.BOT_TOKEN;
 
 const { rateLimit } = require("./middlewares/rateLimit");
 
