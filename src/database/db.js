@@ -4,7 +4,7 @@ const path = require("path");
 // مسیر فایل دیتابیس
 const dbFile = path.join(__dirname, "data.json");
 
-// اگر فایل وجود نداشت بساز
+// ساخت فایل اگر وجود نداشت
 function initDB() {
   if (!fs.existsSync(dbFile)) {
     fs.writeFileSync(dbFile, JSON.stringify({}, null, 2));
@@ -18,10 +18,14 @@ function readDB() {
   return JSON.parse(data);
 }
 
-// نوشتن در دیتابیس
+// نوشتن دیتابیس
 function writeDB(data) {
   fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
 }
+
+/* =========================
+   USER FUNCTIONS
+========================= */
 
 // گرفتن کاربر
 function getUser(userId) {
@@ -29,16 +33,52 @@ function getUser(userId) {
   return db[userId] || null;
 }
 
-// ذخیره کاربر
-function setUser(userId, userData) {
+// اضافه کردن کاربر
+function addUser(userId, data = {}) {
   const db = readDB();
-  db[userId] = userData;
+
+  if (!db[userId]) {
+    db[userId] = {
+      id: userId,
+      ...data,
+      createdAt: Date.now()
+    };
+  }
+
+  writeDB(db);
+  return db[userId];
+}
+
+// آپدیت کاربر
+function updateUser(userId, newData) {
+  const db = readDB();
+
+  db[userId] = {
+    ...(db[userId] || {}),
+    ...newData
+  };
+
+  writeDB(db);
+  return db[userId];
+}
+
+// حذف کاربر
+function deleteUser(userId) {
+  const db = readDB();
+
+  delete db[userId];
+
   writeDB(db);
 }
 
+/* =========================
+   EXPORTS
+========================= */
 module.exports = {
   readDB,
   writeDB,
   getUser,
-  setUser,
+  addUser,
+  updateUser,
+  deleteUser
 };
