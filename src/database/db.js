@@ -1,351 +1,551 @@
-const fs = require("fs");
-const path = require("path");
+require("dotenv").config();
 
-const dbFile = path.join(__dirname, "data.json");
+const express = require("express");
+const { Telegraf } = require("telegraf");
 
-function initDB() {
-if (!fs.existsSync(dbFile)) {
-fs.writeFileSync(
-dbFile,
-JSON.stringify(
-{
-users: {},
-tickets: {},
-reports: [],
-referrals: {}
-},
-null,
-2
-)
-);
-}
-}
+const { botToken, adminId, botUsername, keepAlive } = require("./config");
+const {
+  getUser,
+  addUser,
+  updateUser,
+  setVip,
+  addCoins,
+  addReport,
+  blockUser,
+  createTicket,
+  getTicket,
+  closeTicket,
+  getStatsSummary,
+  setReferredBy
+} = require("./database/db");
 
-function readDB() {
-initDB();
-return JSON.parse(fs.readFileSync(dbFile, "utf-8"));
-}
+const {
+  isInQueue,
+  removeFromQueue,
+  isInChat,
+  getPartner,
+  startChat,
+  endChat,
+  queueUser,
+  findBestPartner,
+  nextChat,
+  getQueueCount,
+  getActiveCount
+} = require("./services/matchService");
 
-function writeDB(data) {
-fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
-}
+const {
+  claimDailyReward,
+  buyBoost,
+  buyVipWithCoins,
+  referralInfo,
+  giveReferralReward,
+  walletInfo
+} = require("./services/monetizationService");
 
-function ensureUserShape(id) {
-const db = readDB();
-if (!db.users[id]) {
-db.users[id] = {
-id: Number(id),
-name: "",
-age: "",
-gender: "",
-preference: "all",
-coins: 0,
-vipUntil: 0,
-boostedUntil: 0,
-dailyClaimAt: 0,
-referralCode: `REF${id}`,
-referredBy: null,
-stats: {
-chats: 0,
-nexts: 0,
-reports: 0
-},
-blocked: [],
-createdAt: Date.now()
-};
-writeDB(db);
-}
-return db.users[id];
+const {
+  mainKeyboard,
+  genderKeyboard,
+  preferenceKeyboard,
+  vipKeyboard
+} = require("./ui/keyboards");
+
+if (!botToken) {
+  console.error("❌ BOT_TOKEN تنظیم نشده");
+  process.exit(1);
 }
 
-// ---------- USERS ----------
-function getUser(id) {
-const db = readDB();
-return db.users[id] || null;
+const bot = new Telegraf(botToken);
+const app = express();
+
+const userState = {};
+const supportState = {};
+const reportState = {};
+
+function isAdmin(ctx) {
+  return String(ctx.from.id) === String(adminId);
 }
 
-function addUser(id, data = {}) {
-const db = readDB();
-
-const existing = db.users[id];
-db.users[id] = {
-id: Number(id),
-name: "",
-age: "",
-gender: "",
-preference: "all",
-coins: 0,
-vipUntil: 0,
-boostedUntil: 0,
-dailyClaimAt: 0,
-referralCode: `REF${id}`,
-referredBy: null,
-stats: {
-chats: 0,
-nexts: 0,
-reports: 0
-},
-blocked: [],
-createdAt: existing?.createdAt || Date.now(),
-...existing,
-...data
-};
-
-writeDB(db);
-return db.users[id];
+function normalizePreference(text) {
+  if (text === "فقط مرد") return "مرد";
+  if (text === "فقط زن") return "زن";
+  if (text === "فقط سایر") return "سایر";
+  return "all";
 }
 
-function updateUser(id, patch) {
-const db = readDB();
-const base =
-db.users[id] ||
-{
-id: Number(id),
-coins: 0,
-vipUntil: 0,
-boostedUntil: 0,
-dailyClaimAt: 0,
-blocked: [],
-stats: { chats: 0, nexts: 0, reports: 0 },
-createdAt: Date.now()
-};
-bio: user.bio || ""
-db.users[id] = {
-...base,
-...patch,
-stats: {
-...(base.stats || {}),
-...(patch.stats || {})
-}
-};
-
-writeDB(db);
-return db.users[id];
+function profileText(user) {
+  const vip = user.vipUntil > Date.now() ? "فعال" : "غیرفعال";
+  return [
+    "👤 پروفایل شما",
+    `اسم: ${user.name || "-"}`,
+    `سن: ${user.age || "-"}`,
+    `جنسیت: ${user.gender || "-"}`,
+    `ترجیح چت: ${user.preference === "all" ? "همه" : user.preference}`,
+    `سکه: ${user.coins || 0}`,
+    `VIP: ${vip}`
+  ].join("\n");
 }
 
-function getAllUsers() {
-const db = readDB();
-return Object.values(db.users || {});
+async function safeSend(chatId, text, extra = {}) {
+  try {
+    await bot.telegram.sendMessage(chatId, text, extra);
+  } catch (_) {}
 }
 
-// ---------- VIP / BOOST ----------
-function setVip(id, days = 30) {
-const user = ensureUserShape(id);
-const current = user.vipUntil && user.vipUntil > Date.now() ? user.vipUntil : Date.now();
-return updateUser(id, {
-vipUntil: current + days * 24 * 60 * 60 * 1000
-});
+async function connectUser(ctx, userId) {
+  const partnerId = findBestPartner(userId);
+
+  if (!partnerId) {
+    queueUser(userId);
+    return ctx.reply(
+      `🔎 در صف جستجو قرار گرفتی...\n\n👥 کاربران در صف: ${getQueueCount()}`,
+      mainKeyboard()
+    );
+  }
+
+  removeFromQueue(partnerId);
+  startChat(userId, partnerId);
+
+  await safeSend(
+    userId,
+    "✅ به یک کاربر ناشناس وصل شدی.\nمی‌تونی پیام، عکس، ویس و... بفرستی.",
+    mainKeyboard()
+  );
+
+  await safeSend(
+    partnerId,
+    "✅ یک کاربر ناشناس بهت وصل شد.\nچت شروع شد.",
+    mainKeyboard()
+  );
 }
 
-function isVip(id) {
-const user = getUser(id);
-return !!(user && user.vipUntil > Date.now());
-}
+// ---------- START ----------
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
+  const text = ctx.startPayload || "";
+  const existing = getUser(userId);
 
-function setBoost(id, minutes = 10) {
-return updateUser(id, {
-boostedUntil: Date.now() + minutes * 60 * 1000
-});
-}
+  if (!existing) {
+    userState[userId] = { step: "name" };
 
-function isBoosted(id) {
-const user = getUser(id);
-return !!(user && user.boostedUntil > Date.now());
-}
+    // referral
+    if (text.startsWith("ref_")) {
+      const inviterId = text.replace("ref_", "").trim();
+      userState[userId].referrer = inviterId;
+    }
 
-// ---------- COINS ----------
-function addCoins(id, amount) {
-const user = ensureUserShape(id);
-return updateUser(id, {
-coins: (user.coins || 0) + amount
-});
-}
+    return ctx.reply(
+      "👋 به ZentoChat PRO MAX خوش اومدی\n\nاسم خودتو بفرست:",
+      mainKeyboard()
+    );
+  }
 
-function spendCoins(id, amount) {
-const user = ensureUserShape(id);
-if ((user.coins || 0) < amount) return false;
-updateUser(id, { coins: user.coins - amount });
-return true;
-}
-
-function getCoins(id) {
-const user = ensureUserShape(id);
-return user.coins || 0;
-}
-
-// ---------- DAILY ----------
-function canClaimDaily(id) {
-const user = ensureUserShape(id);
-const last = user.dailyClaimAt || 0;
-return Date.now() - last >= 24 * 60 * 60 * 1000;
-}
-
-function claimDaily(id, amount = 20) {
-if (!canClaimDaily(id)) return false;
-const user = ensureUserShape(id);
-updateUser(id, {
-coins: (user.coins || 0) + amount,
-dailyClaimAt: Date.now()
-});
-return true;
-}
-
-// ---------- REFERRAL ----------
-function setReferredBy(userId, inviterId) {
-const db = readDB();
-if (!db.users[userId]) ensureUserShape(userId);
-
-if (String(userId) === String(inviterId)) return false;
-if (db.users[userId].referredBy) return false;
-if (!db.users[inviterId]) return false;
-
-db.users[userId].referredBy = String(inviterId);
-
-db.referrals[inviterId] = db.referrals[inviterId] || [];
-if (!db.referrals[inviterId].includes(String(userId))) {
-db.referrals[inviterId].push(String(userId));
-}
-
-writeDB(db);
-return true;
-}
-
-function getReferralCode(id) {
-const user = ensureUserShape(id);
-return user.referralCode || `REF${id}`;
-}
-
-function getReferralStats(id) {
-const db = readDB();
-return db.referrals[id] || [];
-}
-
-// ---------- REPORTS ----------
-function addReport(fromId, targetId, reason = "") {
-const db = readDB();
-db.reports = db.reports || [];
-db.reports.push({
-fromId: Number(fromId),
-targetId: Number(targetId),
-reason,
-createdAt: Date.now()
+  return ctx.reply(
+    `👋 خوش برگشتی ${existing.name || ""}\n\n${profileText(existing)}`,
+    mainKeyboard()
+  );
 });
 
-const target = db.users[targetId];
-if (target) {
-target.stats = target.stats || {};
-target.stats.reports = (target.stats.reports || 0) + 1;
-}
+// ---------- TEXT ROUTER ----------
+bot.on("text", async (ctx, next) => {
+  const userId = ctx.from.id;
+  const text = ctx.message.text;
 
-writeDB(db);
-}
+  // ===== ADMIN COMMANDS =====
+  if (text.startsWith("/stats") && isAdmin(ctx)) {
+    const s = getStatsSummary();
+    return ctx.reply(
+      [
+        "📊 آمار ربات",
+        `👥 کل کاربران: ${s.totalUsers}`,
+        `💎 VIP ها: ${s.vipUsers}`,
+        `⚡ بوست فعال: ${s.boostedUsers}`,
+        `🪙 مجموع سکه‌ها: ${s.totalCoins}`,
+        `🔎 در صف: ${getQueueCount()}`,
+        `💬 چت‌های فعال: ${getActiveCount()}`
+      ].join("\n")
+    );
+  }
 
-function getReports(limit = 20) {
-const db = readDB();
-return (db.reports || []).slice(-limit).reverse();
-}
+  if (text.startsWith("/givecoins") && isAdmin(ctx)) {
+    const parts = text.split(" ");
+    const target = parts[1];
+    const amount = Number(parts[2] || 0);
 
-// ---------- BLOCK ----------
-function blockUser(userId, targetId) {
-const user = ensureUserShape(userId);
-const blocked = new Set(user.blocked || []);
-blocked.add(Number(targetId));
-updateUser(userId, { blocked: [...blocked] });
-}
+    if (!target || !amount) {
+      return ctx.reply("فرمت: /givecoins USER_ID AMOUNT");
+    }
 
-function isBlocked(userId, targetId) {
-const user = ensureUserShape(userId);
-return (user.blocked || []).includes(Number(targetId));
-}
+    addCoins(target, amount);
+    return ctx.reply(`✅ ${amount} سکه به ${target} داده شد.`);
+  }
 
-// ---------- TICKETS ----------
-function createTicket(userId, message) {
-const db = readDB();
-const ticketId = "T" + Date.now();
+  if (text.startsWith("/givevip") && isAdmin(ctx)) {
+    const parts = text.split(" ");
+    const target = parts[1];
+    const days = Number(parts[2] || 0);
 
-db.tickets[ticketId] = {
-id: ticketId,
-userId: Number(userId),
-message,
-status: "open",
-createdAt: Date.now()
-};
+    if (!target || !days) {
+      return ctx.reply("فرمت: /givevip USER_ID DAYS");
+    }
 
-writeDB(db);
-return ticketId;
-}
+    setVip(target, days);
+    return ctx.reply(`✅ VIP ${days} روزه برای ${target} فعال شد.`);
+  }
 
-function getTicket(ticketId) {
-const db = readDB();
-return db.tickets[ticketId] || null;
-}
+  if (text.startsWith("/answer") && isAdmin(ctx)) {
+    const parts = text.split(" ");
+    const ticketId = parts[1];
+    const message = parts.slice(2).join(" ").trim();
 
-function closeTicket(ticketId) {
-const db = readDB();
-if (db.tickets[ticketId]) {
-db.tickets[ticketId].status = "closed";
-writeDB(db);
-}
-}
+    if (!ticketId || !message) {
+      return ctx.reply("فرمت: /answer TICKET_ID پیام");
+    }
 
-// ---------- STATS ----------
-function incrementStat(id, key) {
-const user = ensureUserShape(id);
-const stats = user.stats || {};
-stats[key] = (stats[key] || 0) + 1;
-updateUser(id, { stats });
-}
+    const ticket = getTicket(ticketId);
+    if (!ticket) return ctx.reply("❌ تیکت پیدا نشد");
 
-function getStatsSummary() {
-const users = getAllUsers();
-const totalUsers = users.length;
-const vipUsers = users.filter(u => u.vipUntil > Date.now()).length;
-const boostedUsers = users.filter(u => u.boostedUntil > Date.now()).length;
-const totalCoins = users.reduce((sum, u) => sum + (u.coins || 0), 0);
+    await safeSend(ticket.userId, `📩 پاسخ پشتیبانی:\n\n${message}`);
+    closeTicket(ticketId);
 
-return {
-totalUsers,
-vipUsers,
-boostedUsers,
-totalCoins
-};
-}
+    return ctx.reply("✅ پاسخ ارسال شد.");
+  }
 
-module.exports = {
-readDB,
-writeDB,
+  // ===== REGISTER FLOW =====
+  if (userState[userId]) {
+    const state = userState[userId];
 
-getUser,
-addUser,
-updateUser,
-getAllUsers,
+    if (state.step === "name") {
+      state.name = text.trim();
+      state.step = "age";
+      return ctx.reply("🎂 سنت رو بفرست:");
+    }
 
-setVip,
-isVip,
-setBoost,
-isBoosted,
+    if (state.step === "age") {
+      state.age = text.trim();
+      state.step = "gender";
+      return ctx.reply("👤 جنسیتت رو انتخاب کن:", genderKeyboard());
+    }
 
-addCoins,
-spendCoins,
-getCoins,
+    if (state.step === "gender") {
+      const gender = text.trim();
 
-canClaimDaily,
-claimDaily,
+      addUser(userId, {
+        name: state.name,
+        age: state.age,
+        gender,
+        preference: "all"
+      });
 
-setReferredBy,
-getReferralCode,
-getReferralStats,
+      if (state.referrer) {
+        const ok = setReferredBy(userId, state.referrer);
+        if (ok) {
+          giveReferralReward(state.referrer, userId);
+        }
+      }
 
-addReport,
-getReports,
+      delete userState[userId];
 
-blockUser,
-isBlocked,
+      return ctx.reply(
+        "✅ ثبت‌نام کامل شد.\nاز منوی پایین می‌تونی چت رو شروع کنی.",
+        mainKeyboard()
+      );
+    }
+  }
 
-createTicket,
-getTicket,
-closeTicket,
+  // ===== SUPPORT FLOW =====
+  if (supportState[userId]) {
+    const ticketId = createTicket(userId, text);
+    delete supportState[userId];
 
-incrementStat,
-getStatsSummary
-};
+    await safeSend(
+      adminId,
+      `📩 تیکت جدید\n\nTicket: ${ticketId}\nUser: ${userId}\nMessage: ${text}`
+    );
+
+    return ctx.reply("✅ پیام پشتیبانی‌ات ارسال شد.", mainKeyboard());
+  }
+
+  // ===== REPORT FLOW =====
+  if (reportState[userId]) {
+    const partnerId = getPartner(userId);
+    if (partnerId) {
+      addReport(userId, partnerId, text);
+    }
+    delete reportState[userId];
+    return ctx.reply("🚨 گزارش ثبت شد. ممنون.", mainKeyboard());
+  }
+
+  // ===== MAIN MENU ACTIONS =====
+  const user = getUser(userId);
+
+  if (!user) {
+    return ctx.reply("اول /start بزن و ثبت‌نام کن.");
+  }
+
+  if (text === "🔍 شروع جستجو") {
+    if (isInChat(userId)) {
+      return ctx.reply("💬 الان داخل چت هستی. برای نفر بعدی «⏭ کاربر بعدی» را بزن.");
+    }
+
+    if (isInQueue(userId)) {
+      return ctx.reply("🔎 همین الان داخل صف جستجو هستی...");
+    }
+
+    return connectUser(ctx, userId);
+  }
+
+  if (text === "⏭ کاربر بعدی") {
+    if (isInQueue(userId)) {
+      return ctx.reply("🔎 هنوز در صف جستجو هستی...");
+    }
+
+    if (isInChat(userId)) {
+      const oldPartner = nextChat(userId);
+      if (oldPartner) {
+        await safeSend(oldPartner, "⏭ طرف مقابل به چت بعدی رفت.");
+      }
+      return connectUser(ctx, userId);
+    }
+
+    return connectUser(ctx, userId);
+  }
+
+  if (text === "❌ پایان چت") {
+    removeFromQueue(userId);
+
+    if (!isInChat(userId)) {
+      return ctx.reply("❌ الان داخل چتی نیستی.", mainKeyboard());
+    }
+
+    const partner = endChat(userId);
+    await ctx.reply("❌ چت پایان یافت.", mainKeyboard());
+
+    if (partner) {
+      await safeSend(partner, "❌ طرف مقابل چت را پایان داد.", mainKeyboard());
+    }
+    return;
+  }
+
+  if (text === "🚨 گزارش کاربر") {
+    if (!isInChat(userId)) {
+      return ctx.reply("❌ اول باید داخل چت باشی.");
+    }
+
+    reportState[userId] = true;
+    return ctx.reply("علت گزارش را در یک پیام بنویس:");
+  }
+
+  if (text === "💰 کیف پول") {
+    const wallet = walletInfo(userId);
+    return ctx.reply(
+      [
+        "💰 کیف پول شما",
+        `🪙 موجودی: ${wallet.coins} سکه`,
+        "",
+        "قیمت‌ها:",
+        "⚡ بوست 10 دقیقه: 25 سکه",
+        "💎 VIP 7 روزه: 150 سکه",
+        "💎 VIP 30 روزه: 500 سکه"
+      ].join("\n"),
+      mainKeyboard()
+    );
+  }
+
+  if (text === "🎁 جایزه روزانه") {
+    const result = claimDailyReward(userId);
+    return ctx.reply(result.message, mainKeyboard());
+  }
+
+  if (text === "⚡ بوست") {
+    const result = buyBoost(userId);
+    return ctx.reply(result.message, mainKeyboard());
+  }
+
+  if (text === "💎 VIP") {
+    return ctx.reply(
+      [
+        "💎 بخش VIP",
+        "با VIP می‌تونی سریع‌تر مچ بشی و تجربه بهتری داشته باشی.",
+        "",
+        "انتخاب کن:"
+      ].join("\n"),
+      vipKeyboard()
+    );
+  }
+
+  if (text === "💎 خرید VIP 7 روزه") {
+    const result = buyVipWithCoins(userId, 7);
+    return ctx.reply(result.message, mainKeyboard());
+  }
+
+  if (text === "💎 خرید VIP 30 روزه") {
+    const result = buyVipWithCoins(userId, 30);
+    return ctx.reply(result.message, mainKeyboard());
+  }
+
+  if (text === "👤 پروفایل") {
+    return ctx.reply(profileText(user), mainKeyboard());
+  }
+
+  if (text === "🎯 ترجیح چت") {
+    return ctx.reply("ترجیح چتت را انتخاب کن:", preferenceKeyboard());
+  }
+
+  if (
+    text === "همه" ||
+    text === "فقط مرد" ||
+    text === "فقط زن" ||
+    text === "فقط سایر"
+  ) {
+    const pref = normalizePreference(text);
+    updateUser(userId, { preference: pref });
+    return ctx.reply("✅ ترجیح چت ذخیره شد.", mainKeyboard());
+  }
+
+  if (text === "👥 دعوت دوستان") {
+    const ref = referralInfo(userId);
+    const link = `https://t.me/${botUsername}?start=ref_${userId}`;
+
+    return ctx.reply(
+      [
+        "👥 دعوت دوستان",
+        "لینک دعوتت:",
+        link,
+        "",
+        `👤 تعداد دعوت‌های موفق: ${ref.count}`,
+        "🎁 پاداش: برای هر دعوت موفق، تو 50 سکه و دوستت 20 سکه می‌گیرید."
+      ].join("\n"),
+      mainKeyboard()
+    );
+  }
+
+  if (text === "📩 پشتیبانی") {
+    supportState[userId] = true;
+    return ctx.reply("پیامت برای پشتیبانی را در یک پیام بفرست:");
+  }
+
+  if (text === "🔙 بازگشت") {
+    return ctx.reply("برگشتی به منوی اصلی.", mainKeyboard());
+  }
+
+  // ===== RELAY TO PARTNER =====
+  if (isInChat(userId)) {
+    const partner = getPartner(userId);
+    if (partner) {
+      return safeSend(partner, `💬 ناشناس:\n${text}`);
+    }
+  }
+
+  return next();
+});
+
+// ---------- MEDIA RELAY ----------
+bot.on("photo", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  const photo = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+  const caption = ctx.message.caption || "";
+
+  try {
+    await bot.telegram.sendPhoto(partner, photo, {
+      caption: caption ? `📷 ناشناس:\n${caption}` : "📷 ناشناس"
+    });
+  } catch (_) {}
+});
+
+bot.on("voice", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  try {
+    await bot.telegram.sendVoice(partner, ctx.message.voice.file_id, {
+      caption: "🎤 ویس ناشناس"
+    });
+  } catch (_) {}
+});
+
+bot.on("video", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  try {
+    await bot.telegram.sendVideo(partner, ctx.message.video.file_id, {
+      caption: "🎬 ویدیو ناشناس"
+    });
+  } catch (_) {}
+});
+
+bot.on("sticker", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  try {
+    await bot.telegram.sendSticker(partner, ctx.message.sticker.file_id);
+  } catch (_) {}
+});
+
+bot.on("document", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  try {
+    await bot.telegram.sendDocument(partner, ctx.message.document.file_id, {
+      caption: "📎 فایل ناشناس"
+    });
+  } catch (_) {}
+});
+
+bot.on("audio", async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isInChat(userId)) return;
+
+  const partner = getPartner(userId);
+  if (!partner) return;
+
+  try {
+    await bot.telegram.sendAudio(partner, ctx.message.audio.file_id, {
+      caption: "🎵 فایل صوتی ناشناس"
+    });
+  } catch (_) {}
+});
+
+// ---------- SERVER ----------
+app.get("/", (req, res) => {
+  res.send("ZentoChat PRO MAX is running");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 Server listening on port ${PORT}`);
+});
+
+bot.catch((err) => {
+  console.error("Bot Error:", err);
+});
+
+bot.launch()
+  .then(() => {
+    console.log("🔥 ZentoChat PRO MAX RUNNING");
+  })
+  .catch((err) => {
+    console.error("Launch Error:", err);
+  });
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
