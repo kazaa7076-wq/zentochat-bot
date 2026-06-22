@@ -1,0 +1,26 @@
+{
+  "name": "zentochat",
+  "version": "1.0.0",
+  "description": "ZentoChat - Professional Telegram Anonymous Chat Bot",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "anonymous-chat",
+    "telegraf",
+    "render",
+    "sqlite"
+  ],
+  "author": "ZentoChat",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "sqlite3": "^5.1.7",
+    "telegraf": "^4.16.3"
+  }
+}
